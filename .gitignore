@@ -1,0 +1,47 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Terraform variables (local values)
+*.tfvars
+*.tfvars.json
+
+# Node.js
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Editor/IDE
+.vscode/
+.idea/
+.history/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Misc
+*.log
+*.swp
+*.swo
+*~
