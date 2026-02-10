@@ -1,4 +1,4 @@
-# Optional: trigger Ansible deploy from Terraform (local-exec).
+# Optional: trigger Ansible deploy from Terraform (local-exec)..
 # Requires Ansible + amazon.aws and community.aws collections installed.
 # Run: terraform apply -var-file=dev.tfvars -var="trigger_ansible_deploy=1"
 # Or run Ansible manually: see RUN_COMMANDS_ORDER.md §5b.

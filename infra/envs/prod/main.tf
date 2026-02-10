@@ -40,9 +40,9 @@ module "platform" {
 
   cloudtrail_bucket = var.cloudtrail_bucket
 
-  enable_guardduty  = var.enable_guardduty
-  enable_securityhub = var.enable_securityhub
-  enable_inspector2 = var.enable_inspector2
-  enable_config     = var.enable_config
+  enable_guardduty         = var.enable_guardduty
+  enable_securityhub       = var.enable_securityhub
+  enable_inspector2        = var.enable_inspector2
+  enable_config            = var.enable_config
   enable_deployment_alarms = var.enable_deployment_alarms
 }
