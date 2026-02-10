@@ -1,24 +1,50 @@
-data "aws_ami" "al2" {
+data "aws_ami" "al2023" {
   most_recent = true
   owners      = ["amazon"]
   filter {
     name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+    values = ["al2023-ami-*-x86_64"]
   }
 }
 
 locals {
-  ami = var.ami_id != "" ? var.ami_id : data.aws_ami.al2.id
+  ami = var.ami_id != "" ? var.ami_id : data.aws_ami.al2023.id
   user_data = <<-EOF
     #!/bin/bash
     set -e
-    yum update -y
-    yum install -y docker ruby wget amazon-cloudwatch-agent
+    log() { echo "[$(date -u +%FT%TZ)] $*"; }
+    retry() {
+      local n=0
+      local max=12
+      local delay=10
+      until "$@"; do
+        n=$((n+1))
+        if [ "$n" -ge "$max" ]; then
+          return 1
+        fi
+        log "retry $n/$max: $*"
+        sleep "$delay"
+      done
+    }
+    echo "${var.env}" > /opt/bluegreen-env
+    REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region || true)
+    if [ -z "$REGION" ]; then
+      REGION="${var.region}"
+    fi
+    PKG_MGR="yum"
+    if command -v dnf >/dev/null 2>&1; then
+      PKG_MGR="dnf"
+    fi
+    log "Refreshing package metadata"
+    retry $PKG_MGR clean all
+    retry $PKG_MGR makecache --setopt=skip_if_unavailable=true
+    log "Installing base packages"
+    retry $PKG_MGR update -y --setopt=skip_if_unavailable=true
+    retry $PKG_MGR install -y docker ruby wget amazon-cloudwatch-agent --setopt=skip_if_unavailable=true
     systemctl enable docker
     systemctl start docker
-    REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
     cd /home/ec2-user
-    wget https://aws-codedeploy-${var.region}.s3.${var.region}.amazonaws.com/latest/install
+    wget https://aws-codedeploy-$${REGION}.s3.$${REGION}.amazonaws.com/latest/install
     chmod +x ./install
     ./install auto
     systemctl start codedeploy-agent
@@ -53,6 +79,14 @@ resource "aws_autoscaling_group" "blue" {
   desired_capacity    = var.desired_capacity
   vpc_zone_identifier = aws_subnet.private[*].id
   target_group_arns   = [aws_lb_target_group.blue.arn]
+  instance_refresh {
+    strategy = "Rolling"
+    triggers = ["launch_template"]
+    preferences {
+      min_healthy_percentage = 50
+      instance_warmup        = 180
+    }
+  }
   launch_template {
     id      = aws_launch_template.lt.id
     version = "$Latest"
@@ -71,11 +105,19 @@ resource "aws_autoscaling_group" "blue" {
 
 resource "aws_autoscaling_group" "green" {
   name                = "${var.project}-${var.env}-asg-green"
-  min_size            = 0
+  min_size            = var.min_size
   max_size            = var.max_size
-  desired_capacity    = 0
+  desired_capacity    = var.desired_capacity
   vpc_zone_identifier = aws_subnet.private[*].id
   target_group_arns   = [aws_lb_target_group.green.arn]
+  instance_refresh {
+    strategy = "Rolling"
+    triggers = ["launch_template"]
+    preferences {
+      min_healthy_percentage = 50
+      instance_warmup        = 180
+    }
+  }
   launch_template {
     id      = aws_launch_template.lt.id
     version = "$Latest"

@@ -1,0 +1,12 @@
+# EC2 dynamic inventory (all Env tags). Use --limit env_dev or env_prod to target.
+# Example: ansible-playbook -i inventory/ec2.aws_ec2.yml playbooks/deploy.yml --limit env_dev
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-east-1
+hostnames:
+  - instance-id
+filters:
+  instance-state-name: running
+keyed_groups:
+  - key: tags.Env
+    prefix: env

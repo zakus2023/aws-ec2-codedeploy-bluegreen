@@ -1,0 +1,44 @@
+# Runs on pull requests when infra/** changes. Shows Terraform plan (no apply).
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths: ["infra/**"]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init (prod)
+        working-directory: infra/envs/prod
+        run: terraform init -backend-config=backend.hcl -reconfigure
+
+      - name: Terraform Format Check
+        working-directory: infra/envs/prod
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        working-directory: infra/envs/prod
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: infra/envs/prod
+        run: terraform plan -var-file=prod.tfvars -no-color

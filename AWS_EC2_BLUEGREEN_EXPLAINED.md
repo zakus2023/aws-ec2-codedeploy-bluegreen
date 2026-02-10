@@ -104,6 +104,7 @@ This project is a **complete, production-ready deployment platform** on AWS that
 | **Target Groups** | Collections of EC2 instances | Blue target group and green target group; ALB forwards to one at a time |
 | **Auto Scaling Groups** | Maintains desired number of instances | Automatically replaces unhealthy instances; scales capacity up/down |
 | **CodeDeploy** | Deployment service | Runs scripts on EC2 to deploy new code; manages Blue/Green traffic switching |
+| **Ansible (optional)** | Deploy over SSM | Alternative to CodeDeploy; see **ansible/README.md** (on Windows: WSL or Ansible 2.13 workaround). |
 | **ECR (Elastic Container Registry)** | Docker image repository | Stores your Docker images; EC2 instances pull images from here |
 | **SSM Parameter Store** | Configuration storage | Stores ECR repo name and image tag; scripts read these to know which image to deploy |
 | **S3 bucket** | Object storage for deployment bundles | CodeDeploy downloads your appspec.yml and scripts from here |

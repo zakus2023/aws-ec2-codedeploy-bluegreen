@@ -74,3 +74,15 @@ variable "enable_config" {
   type    = bool
   default = true
 }
+
+variable "enable_deployment_alarms" {
+  type    = bool
+  default = true
+}
+
+# Set to any value (e.g. timestamp) to run Ansible deploy after apply. Leave unset to skip.
+variable "trigger_ansible_deploy" {
+  type        = string
+  default     = ""
+  description = "Trigger Ansible deploy when set (e.g. -var trigger_ansible_deploy=1)"
+}

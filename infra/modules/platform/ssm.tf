@@ -8,6 +8,6 @@ resource "aws_ssm_parameter" "ecr_repo_name" {
 resource "aws_ssm_parameter" "image_tag" {
   name      = "/bluegreen/${var.env}/image_tag"
   type      = "String"
-  value     = "initial"
+  value     = "unset"
   overwrite = true
 }

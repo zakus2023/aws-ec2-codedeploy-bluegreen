@@ -41,3 +41,8 @@ variable "enable_config" {
   type    = bool
   default = true
 }
+
+variable "enable_deployment_alarms" {
+  type    = bool
+  default = true
+}

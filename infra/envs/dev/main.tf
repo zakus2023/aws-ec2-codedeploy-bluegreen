@@ -5,6 +5,10 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 5.0"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = ">= 3.0"
+    }
   }
   backend "s3" {}
 }
@@ -40,4 +44,5 @@ module "platform" {
   enable_securityhub = var.enable_securityhub
   enable_inspector2 = var.enable_inspector2
   enable_config     = var.enable_config
+  enable_deployment_alarms = var.enable_deployment_alarms
 }

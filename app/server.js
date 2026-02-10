@@ -10,7 +10,7 @@ app.get("/health", (_req, res) => {
 
 app.get("/", (_req, res) => {
   res.json({
-    message: "Hello my friend from ASG + ALB + CodeDeploy Blue/Green (HTTPS)!",
+    message: "Hello friends from ASG + ALB + CodeDeploy Blue/Green (HTTPS)!",
     hostname: os.hostname(),
     version: process.env.APP_VERSION || "dev",
     timestamp: new Date().toISOString(),

@@ -7,14 +7,16 @@ set -euo pipefail
 # Environment: prod or dev (must match platform module SSM paths and CI)
 # Explain this is the simple default approach in CI.
 # Option A: hardcode for single-env (e.g. prod only from CI)
-# Use ENV if set, otherwise default to "prod".
-ENV="${ENV:-prod}"
-# Blank line for readability between options.
-
-# Explain the alternate option uses a file from user data.
-# Option B: read from a file written by user data (if you set it in launch template)
-# Example of reading that file or falling back to prod.
-# ENV="$(cat /opt/bluegreen-env 2>/dev/null || echo prod)"
+# Prefer the instance env file written by user data, then ENV var.
+# Fail fast if neither is present to avoid pulling the wrong env tag.
+if [[ -f /opt/bluegreen-env ]]; then
+  ENV="$(tr -d '[:space:]' < /opt/bluegreen-env)"
+elif [[ -n "${ENV:-}" ]]; then
+  ENV="$ENV"
+else
+  echo "ERROR: ENV not set and /opt/bluegreen-env missing; cannot choose SSM paths." >&2
+  exit 1
+fi
 # Blank line for readability between metadata lookups.
 
 # Query EC2 metadata to get the instance region.
@@ -29,6 +31,10 @@ ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 ECR_REPO_NAME="$(aws ssm get-parameter --name "/bluegreen/${ENV}/ecr_repo_name" --region "$REGION" --query Parameter.Value --output text)"
 # Read the image tag from SSM in this region.
 IMAGE_TAG="$(aws ssm get-parameter --name "/bluegreen/${ENV}/image_tag" --region "$REGION" --query Parameter.Value --output text)"
+if [[ -z "$IMAGE_TAG" || "$IMAGE_TAG" == "initial" || "$IMAGE_TAG" == "unset" ]]; then
+  echo "ERROR: image_tag is not set to a real image tag in SSM (/bluegreen/${ENV}/image_tag)." >&2
+  exit 1
+fi
 # Blank line for readability before building the image URI.
 
 # Build the full ECR image URI (account/region/repo:tag).
