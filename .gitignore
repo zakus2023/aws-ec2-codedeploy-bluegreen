@@ -13,9 +13,11 @@ override.tf.json
 .terraformrc
 terraform.rc
 
-# Terraform variables (local values)
+# Terraform variables (local values); allow env-specific files for CI
 *.tfvars
 *.tfvars.json
+!infra/envs/prod/prod.tfvars
+!infra/envs/dev/dev.tfvars
 
 # Node.js
 **/node_modules/
