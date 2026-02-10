@@ -258,6 +258,43 @@ After this, **build-push** and **deploy** can replace manual build/push and Code
 
 ---
 
+### Troubleshooting: "Not authorized to perform sts:AssumeRoleWithWebIdentity"
+
+If the **Terraform Apply** (or other) job fails with:
+
+```text
+Error: Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity
+```
+
+fix it by checking the following. The role’s trust policy only allows the **exact GitHub repo** you configured when applying the OIDC Terraform.
+
+1. **Repo must match where the workflow runs**
+   - The workflow runs in the repo shown in the GitHub Actions URL (e.g. `zakus2023/aws-ec2-codedeploy-bluegreen`).
+   - When you ran Step 3a.1 you had to pass `-var="github_org=..."` and `-var="github_repo=..."`. Those **must** match that repo:
+     - **Org:** same as in the URL (e.g. `zakus2023`).
+     - **Repo:** same as in the URL (e.g. `aws-ec2-codedeploy-bluegreen`).
+   - If you used a different repo (e.g. `CICD-With-AI`), the trust policy does not allow this repo. Re-apply OIDC with the correct org and repo, then update the secret in step 2.
+
+2. **Re-apply OIDC for this repo (if org/repo was wrong)**
+   - From repo root:
+   ```bash
+   cd infra/oidc
+   terraform apply -auto-approve -var="github_org=zakus2023" -var="github_repo=aws-ec2-codedeploy-bluegreen"
+   ```
+   - Copy the new **role_arn** from the output (it may be the same ARN if the role already existed; the trust policy will be updated).
+
+3. **GitHub secret `AWS_ROLE_TO_ASSUME`**
+   - In the **same repo** where the workflow runs: **Settings → Secrets and variables → Actions**.
+   - `AWS_ROLE_TO_ASSUME` must be the **full role ARN** from the OIDC apply (e.g. `arn:aws:iam::123456789012:role/github-actions-bluegreen`).
+   - No extra spaces, no `role/role/...`, same AWS account where you applied the OIDC Terraform.
+
+4. **OIDC applied in the same AWS account**
+   - The role must exist in the account you intend to use for Terraform/ECR/CodeDeploy. If you have multiple accounts, ensure you applied `infra/oidc` in that account and that the secret points to that role.
+
+After fixing, push a change that triggers the workflow again (e.g. push to `main` with a change under `infra/**` for Terraform Apply).
+
+---
+
 ## 4) Build + push image (required before deploy)
 
 **From:** repo root (example: dev)
