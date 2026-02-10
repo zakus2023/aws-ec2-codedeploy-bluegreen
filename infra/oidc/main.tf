@@ -62,7 +62,8 @@ resource "aws_iam_role_policy" "github_actions" {
           "sns:*",
           "ssm:*",
           "ecr:*",
-          "codedeploy:*"
+          "codedeploy:*",
+          "cloudtrail:*"
         ]
         Resource = "*"
       }
