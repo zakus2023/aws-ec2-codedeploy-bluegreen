@@ -1590,6 +1590,8 @@ jobs:
    - `AWS_ROLE_TO_ASSUME`: ARN of IAM role
    - `AWS_REGION`: e.g., `us-east-1`
 
+**CI and tfvars:** Plan and Apply workflows use `-var-file=prod.tfvars`, so **prod.tfvars** must be in the repo. The project `.gitignore` ignores `*.tfvars` but allows `infra/envs/prod/prod.tfvars` and `infra/envs/dev/dev.tfvars`. Commit these for CI; do not put secrets in them. See **RUN_COMMANDS_ORDER.md** §3a for troubleshooting (e.g. "prod.tfvars does not exist", terraform fmt).
+
 ---
 
 ## 17. CrewAI orchestration

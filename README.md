@@ -4,7 +4,7 @@ Blue/green deployment for a Node.js app on AWS EC2: Terraform (bootstrap + platf
 
 ## Quick links
 
-- **RUN_COMMANDS_ORDER.md** — Exact command order: bootstrap → dev/prod → **OIDC + GitHub Actions (§3a)** → build+push → deploy (Ansible or CodeDeploy) → validate; destroy order; EC2 user data reference.
+- **RUN_COMMANDS_ORDER.md** — Exact command order: bootstrap → dev/prod → **OIDC + GitHub Actions (§3a)** → build+push → deploy (Ansible or CodeDeploy) → validate; destroy order; EC2 user data reference. For CI, commit **prod.tfvars** (and **dev.tfvars** if needed); §3a includes troubleshooting (OIDC, prod.tfvars missing, terraform fmt).
 - **IMPLEMENT_AWS_EC2_BLUEGREEN.md** — Full step-by-step implementation guide (app, deploy bundle, Terraform, Ansible alternative, GitHub Actions, CrewAI).
 - **ansible/README.md** — Ansible deploy over SSM (setup, install, run playbooks). On Windows: **WSL** (step-by-step for beginners in that file) or **Ansible 2.13** workaround in PowerShell (native Windows not supported in 2.14+).
 

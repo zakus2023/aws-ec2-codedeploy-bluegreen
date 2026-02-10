@@ -1897,7 +1897,7 @@ Until you replace `REPLACE_WITH_BOOTSTRAP_CLOUDTRAIL_BUCKET` and fill backend.hc
 
 ### 6.6 `infra/envs/prod/variables.tf` and `infra/envs/prod/prod.tfvars`
 
-**What they do:** Prod uses the same variable names as dev so the same **main.tf** and module call work. **variables.tf** can be a copy of dev’s; **prod.tfvars** holds prod-specific values (different domain, VPC CIDR, and usually larger sizes).
+**What they do:** Prod uses the same variable names as dev so the same **main.tf** and module call work. **variables.tf** can be a copy of dev’s; **prod.tfvars** holds prod-specific values (different domain, VPC CIDR, and usually larger sizes). For **GitHub Actions CI**, **prod.tfvars** must be committed; the repo `.gitignore` has an exception so this file is tracked (see Step 7 and RUN_COMMANDS_ORDER.md §3a).
 
 Create `infra/envs/prod/variables.tf` (same as dev):
 
@@ -1990,6 +1990,8 @@ After both applies, you have two stacks: dev (e.g. dev-app.example.com) and prod
 
 **Beginner shortcut:** For a **step-by-step, copy-paste order** (OIDC first, then GitHub secrets, then what each workflow does), see **RUN_COMMANDS_ORDER.md** section **3a) OIDC and GitHub Actions (one-time setup)**. The repo already includes `.github/workflows/` (terraform-plan, terraform-apply, build-push, deploy). You only need to apply the OIDC Terraform and add the two GitHub secrets.
 
+**CI and tfvars:** The Plan and Apply workflows use `-var-file=prod.tfvars`, so **prod.tfvars must be in the repo**. The project `.gitignore` ignores `*.tfvars` but **allows** `infra/envs/prod/prod.tfvars` and `infra/envs/dev/dev.tfvars` (exceptions). Commit these files for CI; do not put secrets (passwords, keys) in them. If Plan fails with "prod.tfvars does not exist" or "terraform fmt" errors, see **RUN_COMMANDS_ORDER.md** §3a (troubleshooting and "CI requirement: commit prod.tfvars").
+
 ---
 
 ### 7.0 Prerequisites (one‑time)
@@ -2071,7 +2073,8 @@ After both applies, you have two stacks: dev (e.g. dev-app.example.com) and prod
                   "sns:*",
                   "ssm:*",
                   "ecr:*",
-                  "codedeploy:*"
+                  "codedeploy:*",
+                  "cloudtrail:*"
                 ]
                 Resource = "*"
               }

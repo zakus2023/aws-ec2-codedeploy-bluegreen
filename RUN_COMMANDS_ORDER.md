@@ -120,7 +120,7 @@ This repo includes five workflow files under `.github/workflows/`:
 
 **Deploy:** You get **both** deploy workflows. After each successful build-push, **Deploy (CodeDeploy)** and **Deploy (Ansible)** both run. Use one or both depending on how you want to roll out (CodeDeploy blue/green vs Ansible over SSM). You can disable one in the repo **Settings → Actions → General** if you only want one.
 
-You do **not** need to create these files; they are already in the repo. After you add the secrets (Step 3a.2), the next push or PR will trigger the right workflow.
+You do **not** need to create these files; they are already in the repo. Plan and Apply use **prod.tfvars** in the repo — ensure it is committed (see **CI requirement: commit prod.tfvars** below). After you add the secrets (Step 3a.2), the next push or PR will trigger the right workflow.
 
 ---
 
@@ -172,7 +172,7 @@ To make Terraform Apply **wait for a person to approve** each run:
 
 ---
 
-### Step 3a.5 — How to trigger workflows and where to see runs (absolute beginner)
+### Step 3a.6 — How to trigger workflows and where to see runs (absolute beginner)
 
 **Where you always look for runs:** Open your repo on GitHub in the browser. Click the **Actions** tab (top bar, next to Pull requests). Every workflow run appears here. Click a run to see its jobs; click a job name to see the log output.
 
@@ -190,7 +190,7 @@ To make Terraform Apply **wait for a person to approve** each run:
      ```bash
      git add infra/
      git commit -m "test terraform plan"
-     git push -u origin my-plan-branch
+     
      ```
   3. In the **browser:** go to your repo on GitHub → click **Pull requests** → **New pull request**. Set **base** to `main`, **compare** to `my-plan-branch` → **Create pull request**. The "Terraform Plan" workflow starts automatically.
   4. To see the plan: click the **Actions** tab → click the running or completed "Terraform Plan" run → click the **plan** job → read the log (the Terraform plan text is in there).
@@ -252,7 +252,8 @@ To make Terraform Apply **wait for a person to approve** each run:
 | **3a.2** | **Browser** (GitHub repo Settings) | **Secrets and variables → Actions** → add `AWS_ROLE_TO_ASSUME` (role ARN) and `AWS_REGION` (e.g. `us-east-1`). |
 | **3a.3** | — | Workflows already in `.github/workflows/`. No command. |
 | **3a.4** | **Browser** (optional) | **Settings → Environments** → create **production**; set **Deployment branches and tags** (No restriction / Protected branches only / Selected branches); optionally add **Required reviewers**. If using "Protected branches only", add a ruleset or branch protection rule for `main` under **Rules** or **Branches**. |
-| **3a.5** | **Bash** or GitHub UI | Push or open PRs; view runs under **Actions** tab. |
+| **3a.5** | **Git** | Commit **prod.tfvars** (and **dev.tfvars** if used in CI). `.gitignore` allows `infra/envs/prod/prod.tfvars` and `infra/envs/dev/dev.tfvars`. Do not put secrets in tfvars. |
+| **3a.6** | **Bash** or GitHub UI | Push or open PRs; view runs under **Actions** tab. |
 
 After this, **build-push** and **deploy** can replace manual build/push and CodeDeploy trigger. You can still deploy with **Ansible** manually (section 5a) if you prefer.
 
@@ -292,6 +293,55 @@ fix it by checking the following. The role’s trust policy only allows the **ex
    - The role must exist in the account you intend to use for Terraform/ECR/CodeDeploy. If you have multiple accounts, ensure you applied `infra/oidc` in that account and that the secret points to that role.
 
 After fixing, push a change that triggers the workflow again (e.g. push to `main` with a change under `infra/**` for Terraform Apply).
+
+---
+
+### CI requirement: commit `prod.tfvars` (and optionally `dev.tfvars`)
+
+The **Terraform Plan** and **Terraform Apply** workflows run `terraform plan -var-file=prod.tfvars` and `terraform apply -var-file=prod.tfvars` in CI. For that to work, **prod.tfvars must exist in the repo**.
+
+- The repo **.gitignore** ignores `*.tfvars` by default but **allows** the env-specific files used by CI:
+  - `!infra/envs/prod/prod.tfvars`
+  - `!infra/envs/dev/dev.tfvars`
+- **Commit** `infra/envs/prod/prod.tfvars` (and `infra/envs/dev/dev.tfvars` if you use dev in CI). Do not put secrets (passwords, keys) in these files; use env vars or a secret store for secrets.
+- If the Plan job fails with **"Given variables file prod.tfvars does not exist"**, add and commit the file:  
+  `git add .gitignore infra/envs/prod/prod.tfvars && git commit -m "Add prod.tfvars for CI" && git push`
+
+---
+
+### Troubleshooting: Terraform Plan — "terraform fmt" or "exited with code 3"
+
+The Plan workflow runs **terraform fmt -check -recursive** in `infra/envs/prod`. If that step fails (exit code 3), some `.tf` or `.tfvars` files are not formatted.
+
+- **Fix:** From repo root run:
+  ```bash
+  cd infra/envs/prod
+  terraform fmt -recursive
+  ```
+  Commit the changed files and push. Re-run the workflow.
+
+---
+
+### Troubleshooting: Terraform Apply — "not authorized ... cloudtrail:CreateTrail"
+
+If the **Terraform Apply** job fails with:
+
+```text
+User: ... is not authorized to perform: cloudtrail:CreateTrail on resource: ...
+because no identity-based policy allows the cloudtrail:CreateTrail action
+```
+
+the GitHub Actions OIDC role is missing **CloudTrail** permissions. The platform module creates a CloudTrail trail; the OIDC role must allow it.
+
+**Fix:** Re-apply the **OIDC** Terraform (this updates the IAM role policy to include `cloudtrail:*`). From repo root, with AWS credentials configured:
+
+```bash
+cd infra/oidc
+terraform init
+terraform apply -auto-approve -var="github_org=YOUR_ORG" -var="github_repo=YOUR_REPO"
+```
+
+Use the same `github_org` and `github_repo` as when you first set up OIDC. No need to change GitHub secrets; the role ARN is unchanged. Then re-run the **Terraform Apply** workflow (e.g. push an empty commit or re-run from the Actions tab).
 
 ---
 
