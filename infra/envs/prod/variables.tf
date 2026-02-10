@@ -74,3 +74,14 @@ variable "enable_config" {
   type    = bool
   default = true
 }
+
+variable "enable_deployment_alarms" {
+  type    = bool
+  default = true
+}
+
+variable "trigger_ansible_deploy" {
+  type        = string
+  default     = ""
+  description = "Trigger Ansible deploy when set (e.g. -var trigger_ansible_deploy=1)"
+}

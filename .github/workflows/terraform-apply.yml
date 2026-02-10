@@ -1,0 +1,38 @@
+# Runs on push to main when infra/** changes. Applies Terraform to prod.
+name: Terraform Apply
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["infra/**"]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init (prod)
+        working-directory: infra/envs/prod
+        run: terraform init -backend-config=backend.hcl -reconfigure
+
+      - name: Terraform Apply (prod)
+        working-directory: infra/envs/prod
+        run: terraform apply -auto-approve -var-file=prod.tfvars

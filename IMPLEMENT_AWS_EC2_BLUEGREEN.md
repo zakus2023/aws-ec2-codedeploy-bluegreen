@@ -10,7 +10,7 @@ This guide walks you through **creating the full project yourself**: repo struct
 ## What You Will Build
 
 - **App**: Small Node/Express app with `/health` and `/`, run in Docker.
-- **Deploy**: CodeDeploy `appspec.yml` and scripts (install, stop, start, validate) so EC2 instances pull the image from ECR and run the container.
+- **Deploy**: Either **(A)** CodeDeploy `appspec.yml` and scripts (install, stop, start, validate), or **(B)** Ansible over SSM + optional Terraform `null_resource` to trigger updates. Both use the same SSM parameters (`/bluegreen/{env}/image_tag`, `ecr_repo_name`); Ansible runs stop/pull/start/validate on instances via SSM (no SSH, no CodeDeploy agent required for deploy path B).
 - **Infra**:  
   - **Bootstrap**: S3 + DynamoDB (Terraform remote backend), KMS, CloudTrail bucket.  
   - **Platform module**: VPC, ALB (HTTPS + HTTP→HTTPS redirect), ACM + Route53, blue/green target groups and ASGs, CodeDeploy, ECR, SSM parameters, CloudWatch Agent config, alarms (ALB 5xx, unhealthy targets, latency, CPU, disk), security services (CloudTrail, GuardDuty, Security Hub, Inspector, Config) with account-level toggles. You can use a single `main.tf` or split into multiple files (vpc.tf, alb.tf, asg.tf, etc.) as in **AWS_EC2_BLUEGREEN_EXPLAINED.md** §11 and §15.  
@@ -38,13 +38,22 @@ aws-ec2-codedeploy-bluegreen/
 │   ├── package.json
 │   ├── server.js
 │   └── Dockerfile
-├── deploy/                       # CodeDeploy bundle
+├── deploy/                       # CodeDeploy bundle (optional if using Ansible deploy)
 │   ├── appspec.yml
 │   └── scripts/
 │       ├── install.sh
 │       ├── stop.sh
 │       ├── start.sh
 │       └── validate.sh
+├── ansible/                      # Ansible deploy over SSM (alternative to CodeDeploy)
+│   ├── ansible.cfg
+│   ├── requirements.yml         # amazon.aws, community.aws collections
+│   ├── inventory/
+│   │   ├── ec2.aws_ec2.yml      # All Env tags; use --limit env_dev or env_prod
+│   │   ├── ec2_dev.aws_ec2.yml
+│   │   └── ec2_prod.aws_ec2.yml
+│   └── playbooks/
+│       └── deploy.yml           # Stop container, pull ECR image, start, validate
 ├── infra/                        # Infrastructure as Code
 │   ├── bootstrap/                # S3 + DynamoDB backend (run once)
 │   │   ├── main.tf
@@ -70,11 +79,14 @@ aws-ec2-codedeploy-bluegreen/
 │   └── envs/
 │       ├── dev/
 │       │   ├── backend.hcl
+│       │   ├── deploy_ansible.tf  # Optional: null_resource to run Ansible deploy
 │       │   ├── imports.tf        # Root import blocks (dev)
 │       │   ├── main.tf
+│       │   ├── variables.tf      # Includes trigger_ansible_deploy (optional)
 │       │   └── dev.tfvars
 │       └── prod/
 │           ├── backend.hcl
+│           ├── deploy_ansible.tf
 │           ├── main.tf
 │           └── prod.tfvars
 ├── .github/
@@ -391,6 +403,26 @@ The **platform module** creates SSM parameters per env: `/bluegreen/dev/ecr_repo
 
 - **Single env (e.g. prod only):** Use `ENV="${ENV:-prod}"` as in the script; no change needed if CI only deploys prod.
 - **Dev and prod with same bundle:** Set `ENV` before running (e.g. CodeDeploy deployment group or user data). Option B in start.sh reads from `/opt/bluegreen-env` if you write that file in the launch template user data with the env name.
+
+---
+
+### Deployment alternative: Ansible + Terraform
+
+You can **skip CodeDeploy** for the actual deploy step and use **Ansible over SSM** plus an optional **Terraform null_resource** to trigger updates.
+
+- **Ansible**: Connects to EC2 instances via **AWS Systems Manager (SSM)**; no SSH or CodeDeploy agent required for the deploy path. The playbook uses EC2 dynamic inventory (filter by tag `Env=dev` or `Env=prod`), runs stop container → pull image from ECR (using SSM parameters) → start container → validate `/health`.
+- **Terraform**: Optional `null_resource` in `infra/envs/dev/deploy_ansible.tf` and `infra/envs/prod/deploy_ansible.tf` runs `ansible-playbook` when you set `trigger_ansible_deploy` (e.g. `terraform apply -var-file=dev.tfvars -var="trigger_ansible_deploy=1"`).
+
+**Setup:** Install Ansible and collections (see **RUN_COMMANDS_ORDER.md** §5a and **ansible/README.md**). On **Windows**, native Ansible 2.14+ is not supported (control node); use **WSL** (step-by-step for beginners in **ansible/README.md** — "WSL setup (step-by-step, for beginners)"), **pin to Ansible 2.13** (PowerShell/CMD), or a Linux host. Run **playbooks from repo root** so inventory and playbook paths resolve. Ensure instances have SSM agent and an IAM role that allows SSM (the platform module already provides this). Deploy **step-by-step**: (1) activate venv, set `ANSIBLE_CONFIG`, (2) get S3 bucket (in WSL, `terraform` often fails with "Exec format error" — get the bucket from **Windows** PowerShell instead; see **RUN_COMMANDS_ORDER.md** §5a Step 5.3 and **ansible/README.md** Step 8.3), (3) run the playbook with `-e ssm_bucket=YOUR_ARTIFACTS_BUCKET`.
+
+```bash
+# From repo root. Step 1–2: venv + ANSIBLE_CONFIG (see RUN_COMMANDS_ORDER.md).
+# Step 3: get bucket. If in WSL and terraform fails, get it from Windows (PowerShell): cd infra\envs\dev then terraform output -raw artifacts_bucket.
+# Step 4: run (replace YOUR_ARTIFACTS_BUCKET with the value from Step 3):
+ansible-playbook -i ansible/inventory/ec2_dev.aws_ec2.yml ansible/playbooks/deploy.yml -e ssm_bucket=YOUR_ARTIFACTS_BUCKET
+```
+
+Or trigger from Terraform after updating the image tag in SSM. Exact command order is in **RUN_COMMANDS_ORDER.md**.
 
 ---
 
@@ -1956,6 +1988,10 @@ After both applies, you have two stacks: dev (e.g. dev-app.example.com) and prod
 
 ## Step 7: Create GitHub Actions Workflows (Detailed, Step‑by‑Step)
 
+**Beginner shortcut:** For a **step-by-step, copy-paste order** (OIDC first, then GitHub secrets, then what each workflow does), see **RUN_COMMANDS_ORDER.md** section **3a) OIDC and GitHub Actions (one-time setup)**. The repo already includes `.github/workflows/` (terraform-plan, terraform-apply, build-push, deploy). You only need to apply the OIDC Terraform and add the two GitHub secrets.
+
+---
+
 ### 7.0 Prerequisites (one‑time)
 
 1. **Create an AWS OIDC role for GitHub Actions**
@@ -2112,6 +2148,145 @@ After both applies, you have two stacks: dev (e.g. dev-app.example.com) and prod
      - `/bluegreen/prod/ecr_repo_name`
      - `/bluegreen/prod/image_tag`
 
+6. **Terraform vs CI responsibilities (critical)**
+  - **Terraform** only creates the **ECR repo** and **SSM parameters** (including `image_tag`, which defaults to `unset`).
+   - **CI (build-push)** must **build and push** the Docker image and **update** `/bluegreen/<env>/image_tag` before any deployment.
+   - If `image_tag` is missing or points to a non-existent image, the container will never start and ALB health checks will fail (502).
+
+6.1 **Beginner step-by-step: what Terraform does vs what CI does**
+
+**Step A — Terraform creates the ECR repo and SSM keys**
+- **Files involved**:
+  - `infra/modules/platform/ecr.tf` (creates the ECR repo)
+  - `infra/modules/platform/ssm.tf` (creates `/bluegreen/<env>/ecr_repo_name` and `/bluegreen/<env>/image_tag`)
+- **Where to run**: from each environment folder
+  - Dev:
+    ```bash
+    cd infra/envs/dev
+    terraform init -backend-config=backend.hcl -reconfigure
+    terraform apply -auto-approve -var-file=dev.tfvars
+    ```
+  - Prod:
+    ```bash
+    cd infra/envs/prod
+    terraform init -backend-config=backend.hcl -reconfigure
+    terraform apply -auto-approve -var-file=prod.tfvars
+    ```
+- **Result**: ECR repo exists, and SSM parameters exist, but the repo is still empty.
+
+**Step B — CI (or you) builds and pushes the Docker image**
+- **Where to run**: repo root (the folder that has `app/`)
+- **Commands (dev example)**: make sure docker desktop is running on your computer
+  ```bash
+  docker build -t bluegreen-dev-app:<tag> app
+  eg: docker build -t bluegreen-dev-app:202602071111 app
+
+  aws ecr get-login-password --region us-east-1 | \
+    docker login --username AWS --password-stdin 058264482067.dkr.ecr.us-east-1.amazonaws.com
+
+  docker tag bluegreen-dev-app:202602071111 058264482067.dkr.ecr.us-east-1.amazonaws.com/bluegreen-dev-app:202602071111
+  docker push 058264482067.dkr.ecr.us-east-1.amazonaws.com/bluegreen-dev-app:202602071111
+  ```
+
+**Step C — CI (or you) updates the SSM image tag**
+- **Where to run**: anywhere with AWS CLI access
+- **Command (dev example)**:
+  ```bash
+  aws ssm put-parameter \
+    --name /bluegreen/dev/image_tag \
+    --value 202602071111 \
+    --type String \
+    --overwrite \
+    --region us-east-1
+  ```
+
+**Step D — Deploy**
+- Trigger the **CodeDeploy** deployment (CI workflow or manual).
+- Instances pull the image from ECR using the tag you just set.
+
+**Beginner examples (Step B–D)**
+
+**Step B example — Build and push**
+- **Example tag**: `dev-20260208-001`
+- **Run from repo root** (the folder that has `app/`):
+  ```bash
+  # Build the image
+  docker build -t bluegreen-dev-app:dev-20260208-001 app
+
+  # Login to ECR
+  aws ecr get-login-password --region us-east-1 | \
+    docker login --username AWS --password-stdin 058264482067.dkr.ecr.us-east-1.amazonaws.com
+
+  # Tag and push
+  docker tag bluegreen-dev-app:dev-20260208-001 \
+    058264482067.dkr.ecr.us-east-1.amazonaws.com/bluegreen-dev-app:dev-20260208-001
+  docker push 058264482067.dkr.ecr.us-east-1.amazonaws.com/bluegreen-dev-app:dev-20260208-001
+  ```
+
+**Step C example — Update SSM**
+```bash
+aws ssm put-parameter \
+  --name /bluegreen/dev/image_tag \
+  --value dev-20260208-001 \
+  --type String \
+  --overwrite \
+  --region us-east-1
+```
+
+**Windows (Git Bash) example**
+```bash
+MSYS_NO_PATHCONV=1 aws ssm put-parameter \
+  --name "/bluegreen/dev/image_tag" \
+  --value dev-20260208-001 \
+  --type String \
+  --overwrite \
+  --region us-east-1
+```
+
+**Step D example — Deploy**
+- **CI**: run the deploy workflow (recommended).
+- **Manual**:
+
+Get the real bucket name from Terraform:
+```bash
+cd infra/envs/dev
+terraform output -raw artifacts_bucket
+```
+If you see "No outputs found", run a refresh to populate outputs:
+```bash
+terraform apply -refresh-only -auto-approve -var-file=dev.tfvars
+terraform output -raw artifacts_bucket
+```
+
+  ```bash
+  aws deploy create-deployment \
+    --application-name bluegreen-dev-codedeploy-app \
+    --deployment-group-name bluegreen-dev-dg \
+    --s3-location bucket=<artifacts_bucket>,bundleType=zip,key=revisions/deployment-<sha>.zip
+  ```
+
+**Manual deploy example with real bucket (dev)**
+```bash
+# From repo root
+zip -r deployment-2026020801.zip deploy
+```
+
+**Windows (PowerShell) alternative if `zip` is missing**
+```powershell
+Compress-Archive -Path deploy\* -DestinationPath deployment-2026020801.zip -Force
+```
+
+```bash
+
+aws s3 cp deployment-2026020801.zip \
+  s3://bluegreen-dev-codedeploy-20260208032643336500000004/revisions/deployment-2026020801.zip
+
+aws deploy create-deployment \
+  --application-name bluegreen-dev-codedeploy-app \
+  --deployment-group-name bluegreen-dev-dg \
+  --s3-location bucket=bluegreen-dev-codedeploy-20260208032643336500000004,bundleType=zip,key=revisions/deployment-2026020801.zip
+```
+
 ### 7.1 Workflow: Terraform Plan (PR)
 
 **Goal**: show infrastructure changes before merge.
@@ -2205,7 +2380,133 @@ Full workflow YAML samples (plan/apply/build‑push/deploy) are in **AWS_EC2_BLU
 
 ---
 
-## Step 8: Create the CrewAI Crew (Optional)
+## Step 8: Pre‑deploy Checklist (Make Deploy Succeed First Time)
+
+Before you run any CodeDeploy deployment, ensure the **ECR image exists** and the **SSM image tag points to it**. Terraform only creates the repo/SSM keys; **CI (or you) must publish the image and update the tag**. This prevents the most common 502: **no container running**.
+
+1. **Build + push the image to ECR**
+   ```bash
+   # Build locally
+   docker build -t bluegreen-dev-app:<tag> app
+
+   # Login + push
+   aws ecr get-login-password --region us-east-1 | \
+     docker login --username AWS --password-stdin 058264482067.dkr.ecr.us-east-1.amazonaws.com
+   docker tag bluegreen-dev-app:<tag> 058264482067.dkr.ecr.us-east-1.amazonaws.com/bluegreen-dev-app:<tag>
+   docker push 058264482067.dkr.ecr.us-east-1.amazonaws.com/bluegreen-dev-app:<tag>
+   ```
+
+   **CI version (build-push workflow)**
+   - **Where**: `.github/workflows/build-push.yml`
+   - **What it does**:
+     1. Checkout code.
+     2. Configure AWS via OIDC.
+     3. Read `/bluegreen/<env>/ecr_repo_name` from SSM.
+     4. Build the image from `app/`.
+     5. Tag with `${GITHUB_SHA::12}`.
+     6. Push to ECR.
+     7. Update `/bluegreen/<env>/image_tag` to the same tag.
+   - **Trigger**: `push` to `main` on `app/**`
+   - **Actual file**: `.github/workflows/build-push.yml`
+     ```yaml
+     name: Build and Push Image
+
+     on:
+       push:
+         branches: [ "main" ]
+         paths:
+           - "app/**"
+
+     permissions:
+       id-token: write
+       contents: read
+
+     jobs:
+       build-push:
+         runs-on: ubuntu-latest
+         steps:
+           - name: Checkout
+             uses: actions/checkout@v4
+
+           - name: Configure AWS credentials (OIDC)
+             uses: aws-actions/configure-aws-credentials@v4
+             with:
+               role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+               aws-region: ${{ secrets.AWS_REGION }}
+
+           - name: Read ECR repo name from SSM
+             id: ssm
+             run: |
+               ECR_REPO_NAME=$(aws ssm get-parameter \
+                 --name "/bluegreen/prod/ecr_repo_name" \
+                 --query "Parameter.Value" --output text)
+               echo "ecr_repo_name=$ECR_REPO_NAME" >> "$GITHUB_OUTPUT"
+
+           - name: Login to ECR
+             uses: aws-actions/amazon-ecr-login@v2
+
+           - name: Build, tag, and push
+             env:
+               ECR_REPO_NAME: ${{ steps.ssm.outputs.ecr_repo_name }}
+               AWS_REGION: ${{ secrets.AWS_REGION }}
+             run: |
+               TAG=${GITHUB_SHA::12}
+               ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+               ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}"
+               docker build -t "${ECR_REPO_NAME}:${TAG}" app
+               docker tag "${ECR_REPO_NAME}:${TAG}" "${ECR_URI}:${TAG}"
+               docker push "${ECR_URI}:${TAG}"
+
+           - name: Update SSM image tag
+             env:
+               AWS_REGION: ${{ secrets.AWS_REGION }}
+             run: |
+               TAG=${GITHUB_SHA::12}
+               aws ssm put-parameter \
+                 --name "/bluegreen/prod/image_tag" \
+                 --value "$TAG" \
+                 --type String \
+                 --overwrite
+     ```
+
+2. **Update the SSM image tag**
+   ```bash
+   aws ssm put-parameter \
+     --name /bluegreen/dev/image_tag \
+     --value <tag> \
+     --type String \
+     --overwrite
+   ```
+
+   **Windows (Git Bash) note**: prevent path mangling for `/bluegreen/...`
+   ```bash
+   MSYS_NO_PATHCONV=1 aws ssm put-parameter \
+     --name "/bluegreen/dev/image_tag" \
+     --value <tag> \
+     --type String \
+     --overwrite \
+     --region us-east-1
+   ```
+
+   **CI version**: the build-push workflow updates `/bluegreen/<env>/image_tag` automatically after pushing the image.
+   **Important**: `image_tag` defaults to `unset` until you update it; deployments will fail until it points to a real image tag.
+
+3. **Optional sanity checks**
+   - ECR has the tag you just pushed.
+   - SSM `/bluegreen/dev/image_tag` matches the tag you pushed.
+
+Repeat for **prod** with `bluegreen-prod-app` and `/bluegreen/prod/image_tag`.
+
+**Prod repeat note**
+- Yes, repeat the same steps for **prod**, but use:
+  - `infra/envs/prod` for `terraform output -raw artifacts_bucket`
+  - `bluegreen-prod-app` for the ECR repo/image name
+  - `/bluegreen/prod/image_tag` for SSM
+  - the **prod** CodeDeploy app/group and artifacts bucket
+
+---
+
+## Step 9: Create the CrewAI Crew (Optional)
 
 CrewAI can support two roles for this project (see **EXPLAIN_AWS_EC2_BLUEGREEN_BEGINNER.md**, section 9):
 
@@ -2230,7 +2531,7 @@ You can later replace this with a full CrewAI project (e.g. `crewai create crew 
 
 ---
 
-## Step 9: Run Order (Exact Sequence)
+## Step 10: Run Order (Exact Sequence)
 
 1. **Bootstrap (once)**  
    `cd infra/bootstrap` → `terraform init` → `terraform apply -auto-approve`  
@@ -2242,19 +2543,22 @@ You can later replace this with a full CrewAI project (e.g. `crewai create crew 
 3. **Deploy PROD**  
   `cd infra/envs/prod` → `terraform init -backend-config=backend.hcl -reconfigure` → `terraform apply -auto-approve -var-file=prod.tfvars`.
 
-4. **Push app to main**  
-   CI runs **build-push** (build image, push ECR, update SSM tag) then **deploy** (package deploy bundle, upload S3, CodeDeploy deployment). Confirm SNS email subscription for alarms if you use email.
+4. **Build + push image (required before deploy)**  
+   CI or local: build image, push ECR, update SSM tag. Use the commands in **Step 8** if you are not using CI.
 
-5. **Validate**  
+5. **Deploy**  
+   **Option A (Ansible):** Follow **RUN_COMMANDS_ORDER.md** §5a step-by-step: get S3 bucket (from Windows: `cd infra\envs\dev` or `infra\envs\prod`, then `terraform output -raw artifacts_bucket`), then run the playbook with `-e ssm_bucket=YOUR_ARTIFACTS_BUCKET`. For **prod** use inventory `ec2_prod.aws_ec2.yml`, bucket from `infra/envs/prod`, and **`-e env=prod`** so the playbook uses `/bluegreen/prod/` SSM parameters. Optional: trigger from Terraform with `-var="trigger_ansible_deploy=1"`.  
+   **Option B (CodeDeploy):** CI or manual: package deploy bundle, upload S3, trigger CodeDeploy deployment (§5b in RUN_COMMANDS_ORDER.md). Confirm SNS email subscription for alarms if you use email.
+
+6. **Validate**  
    Open `https://<your-prod-domain>/health` (and `/`). Check CloudWatch Logs for `/${project}/${env}/docker` and alarms in the console.
 
 ---
+## Step 11: Crew as Full Orchestrator (Optional — User Provides Requirements, Crew Writes Everything)
 
-## Step 10: Crew as Full Orchestrator (Optional — User Provides Requirements, Crew Writes Everything)
+If you want the **crew to orchestrate and confirm**: the user supplies **requirements**, and the crew **writes** all Terraform files, Dockerfile, app, deploy bundle, and GitHub Actions, then **confirms** (validates and optionally verifies after apply). Use this as an alternative to creating the repo by hand (Steps 1–8).
 
-If you want the **crew to orchestrate and confirm**: the user supplies **requirements**, and the crew **writes** all Terraform files, Dockerfile, app, deploy bundle, and GitHub Actions, then **confirms** (validates and optionally verifies after apply). Use this as an alternative to creating the repo by hand (Steps 1–9).
-
-### 10.1 Input: user requirements
+### 11.1 Input: user requirements
 
 Define a single **requirements** input (e.g. JSON or a structured prompt) that the crew consumes. Include:
 
@@ -2273,7 +2577,7 @@ Define a single **requirements** input (e.g. JSON or a structured prompt) that t
 
 You can extend this (e.g. log retention, alarm thresholds); the crew uses these values to fill variables and tfvars.
 
-### 10.2 Agents
+### 11.2 Agents
 
 Define agents that **write** files and **confirm**:
 
@@ -2287,7 +2591,7 @@ Define agents that **write** files and **confirm**:
 
 Each agent needs **tools** that can **write files** (e.g. a tool that takes path + content and writes to the repo). Optionally give InfraAuthor or VerifierAgent **Code Interpreter** so they can run `terraform validate` and `docker build` in the generated repo.
 
-### 10.3 Task sequence (orchestrate then confirm)
+### 11.3 Task sequence (orchestrate then confirm)
 
 Run tasks in this order so outputs of earlier tasks are available to later ones:
 
@@ -2301,20 +2605,20 @@ Run tasks in this order so outputs of earlier tasks are available to later ones:
 8. **Write CrewAI verifier (optional)** — VerifierAgent or a small task writes `crewai/requirements.txt`, `tools.py` (HTTPS health check, optional SSM read), `agents.py`, `flow.py`, `run.py` so the user can run the crew later to confirm HTTPS and SSM.
 9. **Confirm** — VerifierAgent runs `terraform validate` in `infra/bootstrap`, `infra/envs/dev`, `infra/envs/prod`; optionally `docker build -t test ./app`; outputs a **report**: list of generated files, validation results, and **run order** (bootstrap apply → copy outputs to backend.hcl and tfvars → dev apply → prod apply → push to main → validate HTTPS). Optionally a second phase **post-apply confirm**: user runs apply and CI, then crew is invoked again with prod URL and region to check `https://<domain>/health` and SSM parameters.
 
-### 10.4 Tools the crew needs
+### 11.4 Tools the crew needs
 
 - **File write tool** — Input: file path (relative to repo root), content (string). Writes the file. Agents use this to create every file under app/, deploy/, infra/, .github/, crewai/.
 - **File read tool** (optional) — So an agent can read bootstrap outputs or existing files before generating env config.
 - **Code Interpreter** (optional) — So VerifierAgent can run `terraform validate` and `docker build` inside the generated repo. If you don’t use Code Interpreter, the “confirm” step can be a checklist the crew outputs (user runs validate and build manually).
-- **HTTPS / SSM tools** (for post-apply confirm) — Same as Step 8: request to `/health`, read SSM params. Used only in the optional second run after the user has applied.
+- **HTTPS / SSM tools** (for post-apply confirm) — Same as Step 9: request to `/health`, read SSM params. Used only in the optional second run after the user has applied.
 
-### 10.5 Safety
+### 11.5 Safety
 
 - **Generation only by default** — The crew **writes** Terraform and config; it does **not** run `terraform apply` or push to Git unless you explicitly add a task and approval (e.g. human-in-the-loop or sandbox-only apply).
-- **Placeholders** — Bootstrap outputs (bucket name, lock table, CloudTrail bucket) are not known until after the first apply; use placeholders in backend.hcl and cloudtrail_bucket in tfvars, and tell the user to fill them after bootstrap (as in Step 9).
+- **Placeholders** — Bootstrap outputs (bucket name, lock table, CloudTrail bucket) are not known until after the first apply; use placeholders in backend.hcl and cloudtrail_bucket in tfvars, and tell the user to fill them after bootstrap (as in Step 4.5).
 - **Confirm = validate + optional verify** — “Confirm” here means: validate generated files and output run order; optionally, after user applies, verify HTTPS and SSM.
 
-### 10.6 Summary
+### 11.6 Summary
 
 | Step | Who | What |
 |------|-----|------|
@@ -2329,7 +2633,7 @@ For the exact file contents the crew should generate, follow the rest of this gu
 
 ## Checklist Summary
 
-**Manual build (Steps 1–9):**
+**Manual build (Steps 1–8):**
 
 - [ ] Create repo and folder structure (app, deploy/scripts, infra/bootstrap, infra/modules/platform, infra/envs/dev and prod, .github/workflows, crewai).
 - [ ] Create app: package.json, server.js, Dockerfile.
@@ -2341,8 +2645,183 @@ For the exact file contents the crew should generate, follow the rest of this gu
 - [ ] Create crewai: requirements.txt, tools.py (e.g. HTTPS check, SSM read), agents.py, flow.py, run.py.
 - [ ] Run order: bootstrap → dev apply → prod apply → push to main → validate HTTPS and logs.
 
-**Orchestrator (Step 10):** User provides requirements → crew writes Terraform, Dockerfile, app, deploy, workflows (and optional crewai verifier) → crew confirms (terraform validate, optional docker build; run-order summary; optional post-apply HTTPS + SSM check).
+**Orchestrator (Step 11):** User provides requirements → crew writes Terraform, Dockerfile, app, deploy, workflows (and optional crewai verifier) → crew confirms (terraform validate, optional docker build; run-order summary; optional post-apply HTTPS + SSM check).
 
 **Optional:** Release & Deployment Pipeline (release-crew/, release-prep.yml, CHANGELOG, deploy_checklist, rollback_plan, test_plan) — **AWS_EC2_BLUEGREEN_EXPLAINED.md** §18. **Production hardening** (what’s included and what to add): **AWS_EC2_BLUEGREEN_EXPLAINED.md** §19.
 
 For a **detailed explanation** of each component (Blue/Green, ALB, ACM, CloudWatch, security services, backend), see **EXPLAIN_AWS_EC2_BLUEGREEN_BEGINNER.md**. For **full code samples**, **split Terraform structure**, **production hardening**, **Release Pipeline**, and **extended CrewAI orchestration**, see **AWS_EC2_BLUEGREEN_EXPLAINED.md**.
+
+---
+
+## Appendix: EC2 Console Walkthrough (Create, User Data, Test, SSH, Troubleshoot)
+
+This is a **console-only** walkthrough to create a single EC2 instance, run user data, test the app, and troubleshoot using AWS Console tools.
+
+### A) Create an EC2 instance in the console
+1. Go to **EC2 → Instances → Launch instances**.
+2. **Name**: `bluegreen-manual-test`.
+3. **AMI**: Choose **Amazon Linux 2023**.
+4. **Instance type**: `t3.micro` (dev).
+5. **Key pair**: Create or select one (needed for SSH/Instance Connect).
+6. **Network settings**:
+   - VPC: choose your dev VPC.
+   - Subnet: choose a public subnet if you need a public IP.
+   - Auto-assign public IP: **Enable** (only if you plan to SSH directly).
+   - Security group: allow **SSH (22)** from your IP and **HTTP (8080)** from the ALB security group or your IP for testing.
+7. **Advanced details → User data**: paste your user data script (the same logic as in `infra/modules/platform/asg.tf`).
+8. Click **Launch instance**.
+
+**User data (copy/paste)**
+```bash
+#!/bin/bash
+set -e
+log() { echo "[$(date -u +%FT%TZ)] $*"; }
+retry() {
+  local n=0
+  local max=12
+  local delay=10
+  until "$@"; do
+    n=$((n+1))
+    if [ "$n" -ge "$max" ]; then
+      return 1
+    fi
+    log "retry $n/$max: $*"
+    sleep "$delay"
+  done
+}
+echo "dev" > /opt/bluegreen-env
+REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region || true)
+if [ -z "$REGION" ]; then
+  REGION="us-east-1"
+fi
+PKG_MGR="yum"
+if command -v dnf >/dev/null 2>&1; then
+  PKG_MGR="dnf"
+fi
+log "Refreshing package metadata"
+retry $PKG_MGR clean all
+retry $PKG_MGR makecache --setopt=skip_if_unavailable=true
+log "Installing base packages"
+retry $PKG_MGR update -y --setopt=skip_if_unavailable=true
+retry $PKG_MGR install -y docker ruby wget amazon-cloudwatch-agent --setopt=skip_if_unavailable=true
+systemctl enable docker
+systemctl start docker
+cd /home/ec2-user
+wget https://aws-codedeploy-$REGION.s3.$REGION.amazonaws.com/latest/install
+chmod +x ./install
+./install auto
+systemctl start codedeploy-agent
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 \
+  -c ssm:/bluegreen/dev/cloudwatch/agent-config -s
+```
+
+**Adjust for prod**: change `echo "dev"` and the SSM path to `prod` (and `us-east-1` if different).
+
+### B) Confirm user data ran
+1. Select the instance → **Actions → Monitor and troubleshoot → Get system log**.
+2. Scroll for **cloud-init** output and verify:
+   - **Docker installed and running**
+   - CodeDeploy agent installed
+   - CloudWatch agent config fetched
+3. (Optional) **Instance screenshot** shows boot progress:
+   - **Actions → Monitor and troubleshoot → Get instance screenshot**
+
+### C) Test the app from the console
+1. If you used a public IP:
+   - Open **Public IPv4 address** in browser:
+     - `http://<public-ip>:8080/health`
+2. If the instance is in a private subnet:
+   - Use **SSM Session Manager**:
+     - **EC2 → Instances → Select instance → Connect → Session Manager**
+   - Run:
+     ```bash
+     curl -i http://localhost:8080/health
+     ```
+
+### D) Connect to EC2 remotely (SSH)
+1. If the instance has a public IP:
+   - **EC2 → Instances → Select → Connect → SSH client**
+   - Use the exact SSH command shown in the console.
+2. If the instance has **no public IP**:
+   - Use **SSM Session Manager** (no SSH required).
+
+### E) Troubleshooting checklist (Console-first, beginner friendly)
+Follow in order. Stop when you find the first failing step.
+
+1. **Instance status checks (basic health)**:
+   - Go to **EC2 → Instances → select the instance → Status checks**.
+   - Expected: **2/2 checks passed** within a few minutes.
+   - If not: wait 2-3 minutes and refresh. If still failing, the instance is not healthy yet.
+
+2. **Target group health (ALB path)**:
+   - Go to **EC2 → Target Groups → select your app target group → Targets tab**.
+   - Expected: the instance shows **healthy**.
+   - If **unhealthy**: the app is not running or the health check path/port is wrong.
+
+3. **CodeDeploy deployment status (what failed and why)**:
+   - Open the AWS Console and make sure the **region** (top-right) matches your environment.
+   - Click the **Services** menu (top-left) or use the search bar.
+   - Type `CodeDeploy` and open **AWS CodeDeploy**.
+   - In the left sidebar, click **Deployments**.
+   - Click the latest deployment, then open **Deployment details → Events**.
+   - Expected: all lifecycle events are **Succeeded**.
+   - If you see **Failed** or **Stopped**:
+     - Open the failed event to see the reason (common: `NO_INSTANCES` or hook errors).
+
+4. **Auto Scaling permissions for CodeDeploy (AccessDenied in Step 1)**:
+   - If the deployment error says the CodeDeploy role **does not give permission** for AmazonAutoScaling,
+     or CloudTrail shows `CreateAutoScalingGroup` **AccessDenied**.
+   - Go to **IAM → Roles → bluegreen-dev-codedeploy-role**:
+     - Confirm **Permissions boundary** is **None**.
+   - Open **IAM → Policy simulator**:
+     - Select the role above.
+     - Actions to test: `autoscaling:CreateAutoScalingGroup` and `autoscaling:CreateOrUpdateTags`.
+     - Resource: `*`.
+     - Add request tag context keys (if required in your org):
+       - `aws:RequestTag/Env` = `dev`
+       - `aws:RequestTag/Name` = `bluegreen-dev-blue`
+       - `aws:RequestTag/CodeDeployProvisioningDeploymentId` = `<deployment-id>`
+   - If the simulator shows **Explicit deny**, the usual causes are:
+     - Org SCPs or permission boundaries.
+     - Tag-based deny rules that require extra tags.
+   - Fix:
+     - Add required tags to the **blue ASG** so CodeDeploy copies them,
+       or update the deny policy in your org/role.
+
+5. **Cloud-init logs (user data ran or not)**:
+   - Go to **EC2 → Instances → select instance → Actions → Monitor and troubleshoot → Get system log**.
+   - Search for `cloud-init` and scroll to the bottom.
+   - Expected signs of success:
+     - `Installing base packages`
+     - `codedeploy-agent` started
+     - `amazon-cloudwatch-agent-ctl` completed
+   - If you see errors:
+     - Package install failures usually mean no internet/NAT access.
+     - SSM fetch failures usually mean the instance role or SSM path is wrong.
+
+6. **Session Manager commands (verify services)**:
+   - Go to **EC2 → Instances → Connect → Session Manager**.
+   - Run:
+   ```bash
+   docker ps -a
+   docker logs sample-app --tail 200
+   systemctl status docker --no-pager
+   journalctl -u codedeploy-agent --no-pager | tail -n 200
+   ```
+   - Expected: Docker running, CodeDeploy agent active, container running.
+
+7. **SSM parameters (did CodeDeploy read the right tag?)**:
+   - Go to **Systems Manager → Parameter Store**.
+   - Check `/bluegreen/dev/ecr_repo_name` and `/bluegreen/dev/image_tag`.
+   - Expected: `image_tag` matches an existing ECR image tag.
+
+8. **ECR images (tag exists)**:
+   - Go to **ECR → Repositories → bluegreen-dev-app → Images**.
+   - Confirm the tag exists and is the one in SSM.
+
+### F) Common console fixes
+- **502 from ALB**: target group shows **unhealthy** → container not running or wrong image tag.
+- **AccessDenied on CreateAutoScalingGroup**: run IAM Policy Simulator on the **role** `bluegreen-dev-codedeploy-role` (not your user). If the simulator shows **Allowed** but deployment still fails, the real API is denied by something the simulator doesn’t model; use **DISCOVER_EXISTING** so CodeDeploy uses your existing green ASG and does not create a new one (see `codedeploy.tf`).
+- **No instances in green fleet**: CodeDeploy needs green ASG capacity. With **DISCOVER_EXISTING**, ensure the green ASG has `desired_capacity` ≥ 1 so instances exist for the green fleet.
+- **User data didn’t run**: check cloud-init logs; verify the instance has outbound internet (NAT/IGW).

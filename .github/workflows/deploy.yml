@@ -1,0 +1,54 @@
+# Runs after build-push succeeds. Packages deploy bundle, uploads to S3, triggers CodeDeploy.
+name: Deploy (CodeDeploy)
+
+on:
+  workflow_run:
+    workflows: ["Build and Push Image"]
+    types: [completed]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init (prod) and get outputs
+        id: tf
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -backend-config=backend.hcl -reconfigure
+          echo "cd_app=$(terraform output -raw codedeploy_app)" >> "$GITHUB_OUTPUT"
+          echo "cd_group=$(terraform output -raw codedeploy_group)" >> "$GITHUB_OUTPUT"
+          echo "artifacts_bucket=$(terraform output -raw artifacts_bucket)" >> "$GITHUB_OUTPUT"
+
+      - name: Package deployment bundle
+        run: |
+          cd deploy
+          zip -r ../deployment.zip .
+
+      - name: Upload to S3 and create CodeDeploy deployment
+        run: |
+          KEY="revisions/deployment-${GITHUB_SHA::12}.zip"
+          aws s3 cp deployment.zip "s3://${{ steps.tf.outputs.artifacts_bucket }}/${KEY}"
+          aws deploy create-deployment \
+            --application-name "${{ steps.tf.outputs.cd_app }}" \
+            --deployment-group-name "${{ steps.tf.outputs.cd_group }}" \
+            --s3-location bucket="${{ steps.tf.outputs.artifacts_bucket }}",key="${KEY}",bundleType=zip
+
+      - name: Print prod URL
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -backend-config=backend.hcl -reconfigure -input=false
+          echo "Prod URL: $(terraform output -raw https_url)"

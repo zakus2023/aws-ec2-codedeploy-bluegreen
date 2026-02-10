@@ -1,0 +1,63 @@
+# Runs after build-push succeeds. Deploys to prod EC2 via Ansible over SSM (no CodeDeploy).
+name: Deploy (Ansible)
+
+on:
+  workflow_run:
+    workflows: ["Build and Push Image"]
+    types: [completed]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-ansible:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ansible, boto3, and collections
+        run: |
+          pip install ansible boto3
+          ansible-galaxy collection install -r ansible/requirements.yml --force
+
+      - name: Install Session Manager plugin
+        run: |
+          curl -s "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb
+          sudo dpkg -i /tmp/session-manager-plugin.deb
+
+      - name: Get artifacts bucket (SSM transfer bucket) from Terraform
+        id: tf
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -backend-config=backend.hcl -reconfigure -input=false
+          echo "bucket=$(terraform output -raw artifacts_bucket)" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to prod with Ansible (SSM)
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible.cfg
+        run: |
+          ansible-playbook \
+            -i ansible/inventory/ec2_prod.aws_ec2.yml \
+            ansible/playbooks/deploy.yml \
+            -e "ssm_bucket=${{ steps.tf.outputs.bucket }}" \
+            -e "env=prod"
+
+      - name: Print prod URL
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -backend-config=backend.hcl -reconfigure -input=false
+          echo "Prod URL: $(terraform output -raw https_url)"

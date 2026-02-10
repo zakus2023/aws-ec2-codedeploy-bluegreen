@@ -1,0 +1,4 @@
+# Keep Ansible inventory and playbook YAML with LF so WSL/Linux does not get "Exec format error"
+ansible/inventory/*.yml text eol=lf
+ansible/inventory/*.aws_ec2.yml text eol=lf
+ansible/playbooks/*.yml text eol=lf
